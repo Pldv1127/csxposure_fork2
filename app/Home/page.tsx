@@ -61,167 +61,22 @@ const HomePage: React.FC = () => {
   
   // Fetch featured cards first (they load faster)
   useEffect(() => {
-    const fetchFeaturedUsers = async () => {
+    const getFeatured = async () => {
       try {
-        const featuredRef = doc(db, "featured", "topUsers");
-        const featuredSnap = await getDoc(featuredRef);
-        const now = new Date();
-        let topUsers: CardProps[] = [];
-    
-        // Check if featured data exists and is fresh (less than 3 days old)
-        if (featuredSnap.exists()) {
-          const data = featuredSnap.data();
-          const lastUpdated = data.lastUpdated?.toDate?.() || new Date(0);
-          const ageInDays = (now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24);
-    
-          if (ageInDays < 3 && data.users?.length > 0) {
-            // Use a batch get for better performance
-            const topUserPromises = data.users.map(async (u: { userId: string; highlightCategory: string }) => {
-              const profileRef = doc(db, "users", u.userId, "details", "profileData");
-              const userRef = doc(db, "users", u.userId);
-              const [profileSnap, userSnap] = await Promise.all([getDoc(profileRef), getDoc(userRef)]);
-              
-              if (profileSnap.exists() && userSnap.exists()) {
-                const profile = profileSnap.data();
-                const userData = userSnap.data();
-                return {
-                  userId: u.userId,
-                  userType: userData.userType || "student",
-                  firstName: profile.firstName || "N/A",
-                  lastName: profile.lastName || "N/A",
-                  school: profile.school || "Unknown School",
-                  description: profile.bio || "No bio available",
-                  profileImageUrl: profile.profileImage || '',
-                  status: profile.status || '',
-                  volunteer: profile.volunteerAgreement || false,
-                  categoryCounts: profile.categoryCounts || { Game: 0, App: 0, Website: 0, Other: 0 },
-                  highlightCategory: u.highlightCategory,
-                };
-              }
-              return null;
-            });
-            
-            const resolved = await Promise.all(topUserPromises);
-            topUsers = resolved.filter(Boolean) as CardProps[];
-            setFeaturedCards(topUsers);
-          }
+        const res = await fetch("/api/runcode");
+        const data = await res.json();
+        if (res.ok) {
+          setFeaturedCards(data.featuredUsers);
+        } else {
+          console.error("API error:", data.error);
         }
-        
-        // If no recent cached data, calculate top users ourselves
-        if (topUsers.length === 0) {
-          // Efficiently get a batch of users to find featured users
-          const usersCollection = collection(db, "users");
-          const userQuery = query(usersCollection, where("userType", "!=", "business"), limit(100));
-          const userDocs = await getDocs(userQuery);
-          const fetchedUsers: CardProps[] = [];
-          
-          // Process users in parallel for better performance
-          const userPromises = userDocs.docs.map(async (userDoc) => {
-            const userId = userDoc.id;
-            const userType = userDoc.data().userType;
-            
-            const profileDocRef = doc(db, "users", userId, "details", "profileData");
-            const profileDocSnap = await getDoc(profileDocRef);
-            
-            if (profileDocSnap.exists()) {
-              const profile = profileDocSnap.data();
-              return {
-                userId,
-                userType,
-                firstName: profile.firstName || "N/A",
-                lastName: profile.lastName || "N/A",
-                school: profile.school || "Unknown School",
-                description: profile.bio || "No bio available",
-                profileImageUrl: profile.profileImage || '',
-                status: profile.status || '',
-                volunteer: profile.volunteerAgreement || false,
-                categoryCounts: profile.categoryCounts || { Game: 0, App: 0, Website: 0, Other: 0 },
-              };
-            }
-            return null;
-          });
-          
-          const resolvedUsers = await Promise.all(userPromises);
-          const validUsers = resolvedUsers.filter(Boolean) as CardProps[];
-          
-          // Find featured users
-          const usedIds = new Set<string>();
-          
-          // Find user with most games
-          const mostGame = validUsers
-            .filter(u => !usedIds.has(u.userId))
-            .sort((a, b) => (b.categoryCounts?.Game || 0) - (a.categoryCounts?.Game || 0))[0];
-            
-          if (mostGame) {
-            usedIds.add(mostGame.userId);
-            mostGame.highlightCategory = "Game";
-          }
-          
-          // Find user with most apps
-          const mostApp = validUsers
-            .filter(u => !usedIds.has(u.userId))
-            .sort((a, b) => (b.categoryCounts?.App || 0) - (a.categoryCounts?.App || 0))[0];
-            
-          if (mostApp) {
-            usedIds.add(mostApp.userId);
-            mostApp.highlightCategory = "App";
-          }
-          
-          // Find user with most websites
-          const mostWebsite = validUsers
-            .filter(u => !usedIds.has(u.userId))
-            .sort((a, b) => (b.categoryCounts?.Website || 0) - (a.categoryCounts?.Website || 0))[0];
-            
-          if (mostWebsite) {
-            usedIds.add(mostWebsite.userId);
-            mostWebsite.highlightCategory = "Website";
-          }
-          
-          // Find user with most projects overall
-          const mostGeneral = validUsers
-            .filter(u => !usedIds.has(u.userId))
-            .sort((a, b) => {
-              const totalA = (a.categoryCounts?.Game || 0) + 
-                           (a.categoryCounts?.App || 0) + 
-                           (a.categoryCounts?.Website || 0);
-              const totalB = (b.categoryCounts?.Game || 0) + 
-                           (b.categoryCounts?.App || 0) + 
-                           (b.categoryCounts?.Website || 0);
-              return totalB - totalA;
-            })[0];
-            
-          if (mostGeneral) {
-            usedIds.add(mostGeneral.userId);
-            mostGeneral.highlightCategory = "Number of";
-          }
-          
-          // Create featured cards array
-          const featuredCards: CardProps[] = [];
-          if (mostGeneral) featuredCards.push(mostGeneral);
-          if (mostGame) featuredCards.push(mostGame);
-          if (mostApp) featuredCards.push(mostApp);
-          if (mostWebsite) featuredCards.push(mostWebsite);
-          
-          setFeaturedCards(featuredCards);
-          
-          // Build lean version that could be cached on server side
-          const leanFeatured = featuredCards.map(card => ({
-            userId: card.userId,
-            highlightCategory: card.highlightCategory
-          }));
-          
-          console.log("Calculated new featured users:", leanFeatured);
-          // Note: The caching to Firestore should be done server-side
-        }
-      } catch (error) {
-        console.error("Error fetching featured users:", error);
-      } finally {
-        // Now fetch regular users in a paginated way
-        fetchUsers();
+      } catch (err) {
+        console.error("Failed to fetch featured users:", err);
       }
+      fetchUsers();  // fetch first page after featured users load
     };
-    
-    fetchFeaturedUsers();
+  
+    getFeatured();
   }, []);
   
   // Fetch regular users with pagination
@@ -231,72 +86,24 @@ const HomePage: React.FC = () => {
     try {
       setLoadingMore(loadMore);
       if (!loadMore) setLoading(true);
-      
-      // Create a query with pagination
-      let usersQuery = query(
-        collection(db, "users"),
-        where("userType", "!=", "business"),
-        orderBy("userType"),
-        limit(PAGE_SIZE)
-      );
-      
-      // If loading more, start after the last document
+      // Compose API URL with pagination param
+      let url = `/api/users?limit=${PAGE_SIZE}`;
       if (loadMore && lastDoc) {
-        usersQuery = query(
-          collection(db, "users"),
-          where("userType", "!=", "business"),
-          orderBy("userType"),
-          startAfter(lastDoc),
-          limit(PAGE_SIZE)
-        );
+        url += `&startAfter=${lastDoc}`;
       }
-      
-      const userDocs = await getDocs(usersQuery);
-      
-      // Update lastDoc for pagination
-      const lastVisible = userDocs.docs[userDocs.docs.length - 1];
-      setLastDoc(lastVisible);
-      setHasMore(userDocs.docs.length === PAGE_SIZE);
-      
-      // Process users in batch
-      const userPromises = userDocs.docs.map(async (userDoc) => {
-        const userId = userDoc.id;
-        const userType = userDoc.data().userType;
-        
-        // Skip if this user is in featuredCards
-        if (featuredCards.some(card => card.userId === userId)) {
-          return null;
-        }
-        
-        // Get profile data
-        const profileDocRef = doc(db, "users", userId, "details", "profileData");
-        const profileDocSnap = await getDoc(profileDocRef);
-        
-        if (profileDocSnap.exists() && userType !== 'business') {
-          const profile = profileDocSnap.data();
-          return {
-            userId,
-            userType,
-            firstName: profile.firstName || "N/A",
-            lastName: profile.lastName || "N/A",
-            school: profile.school || "Unknown School",
-            description: profile.bio || "No bio available",
-            profileImageUrl: profile.profileImage || '',
-            status: profile.status || '',
-            volunteer: profile.volunteerAgreement || false,
-            categoryCounts: profile.categoryCounts || { Game: 0, App: 0, Website: 0, Other: 0 },
-          };
-        }
-        return null;
-      });
-      
-      const users = (await Promise.all(userPromises)).filter(Boolean) as CardProps[];
-      
+      const res = await fetch(url);
+      const data = await res.json();
+      if (!res.ok) {
+        console.error("API error:", data.error);
+        return;
+      }
       if (loadMore) {
-        setRegularCards(prev => [...prev, ...users]);
+        setRegularCards(prev => [...prev, ...data.users]);
       } else {
-        setRegularCards(users);
+        setRegularCards(data.users);
       }
+      setLastDoc(data.lastDoc);
+      setHasMore(data.hasMore);
     } catch (error) {
       console.error("Error fetching users:", error);
     } finally {
